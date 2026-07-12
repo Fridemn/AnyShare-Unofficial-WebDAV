@@ -51,6 +51,7 @@ if os.name == "nt":
         _svc_name_ = "AnyShareUnofficialWebDAVX18765"
         _svc_display_name_ = "AnyShare Unofficial WebDAV X: (18765)"
         _svc_description_ = "Exposes AnyShare document libraries through a local WebDAV endpoint."
+        _exe_name_ = str(Path(sys.executable).resolve().parent / "pythonservice.exe")
 
         def __init__(self, args) -> None:
             super().__init__(args)
@@ -98,7 +99,10 @@ def main() -> int:
     if os.name != "nt":
         print("This service can only be installed or run on Windows.", file=sys.stderr)
         return 1
-    win32serviceutil.HandleCommandLine(AnyShareWebDAVService)
+    win32serviceutil.HandleCommandLine(
+        AnyShareWebDAVService,
+        serviceClassString="Mount.service.AnyShareWebDAVService",
+    )
     return 0
 
 

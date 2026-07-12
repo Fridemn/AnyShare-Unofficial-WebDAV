@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from Mount.config import MountConfig
+from Mount.prepare_service_runtime import _first_existing
 
 
 BASE_ENV = """\
@@ -61,6 +62,13 @@ class TestMountConfig(unittest.TestCase):
     def test_requires_certificate_pair(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be set together"):
             self._load("ANYSHARE_DAV_CERTFILE=server.crt\n")
+
+    def test_service_runtime_repair_accepts_moved_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "site-packages" / "pythonservice.exe"
+            moved = Path(temp_dir) / "pythonservice.exe"
+            moved.write_bytes(b"host")
+            self.assertEqual(_first_existing(missing, moved), moved)
 
 
 if __name__ == "__main__":

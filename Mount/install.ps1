@@ -22,7 +22,22 @@ $VenvDir = [IO.Path]::GetFullPath($VenvDir)
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Run this installer from an elevated PowerShell window."
+    Write-Host "Requesting administrator privileges..."
+    $ElevationArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$PSCommandPath`"",
+        "-Uv", "`"$Uv`"",
+        "-PythonVersion", "`"$PythonVersion`"",
+        "-VenvDir", "`"$VenvDir`"",
+        "-EnvFile", "`"$EnvFile`"",
+        "-MountUser", "`"$MountUser`""
+    )
+    if ($AllowHttpBasic) {
+        $ElevationArgs += "-AllowHttpBasic"
+    }
+    $Elevated = Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $ElevationArgs -Wait -PassThru
+    exit $Elevated.ExitCode
 }
 $UvCommand = Get-Command $Uv -ErrorAction Stop
 $Uv = $UvCommand.Source
@@ -38,6 +53,9 @@ try {
 }
 $Python = Join-Path $VenvDir "Scripts\python.exe"
 if (-not (Test-Path $Python)) { throw "Isolated Python was not created: $Python" }
+$PrepareRuntimeScript = Join-Path $PSScriptRoot "prepare_service_runtime.py"
+& $Python $PrepareRuntimeScript
+if ($LASTEXITCODE -ne 0) { throw "Failed to prepare the isolated pywin32 service runtime." }
 
 # The service runs as LocalSystem and cannot inherit the interactive shell environment.
 [Environment]::SetEnvironmentVariable("ANYSHARE_MOUNT_ENV_FILE", $EnvFile, "Machine")

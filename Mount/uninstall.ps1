@@ -20,7 +20,20 @@ $VenvDir = [IO.Path]::GetFullPath($VenvDir)
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Run this uninstaller from an elevated PowerShell window."
+    Write-Host "Requesting administrator privileges..."
+    $ElevationArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$PSCommandPath`"",
+        "-VenvDir", "`"$VenvDir`"",
+        "-EnvFile", "`"$EnvFile`"",
+        "-MountUser", "`"$MountUser`""
+    )
+    if ($KeepVenv) {
+        $ElevationArgs += "-KeepVenv"
+    }
+    $Elevated = Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $ElevationArgs -Wait -PassThru
+    exit $Elevated.ExitCode
 }
 $Python = Join-Path $VenvDir "Scripts\python.exe"
 if (-not (Test-Path $Python)) { throw "Isolated Python was not found: $Python" }

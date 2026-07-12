@@ -26,12 +26,14 @@ ANYSHARE_MOUNT_WAIT_SECONDS=60
 
 ## 安装
 
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后在管理员 PowerShell 中执行：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\Mount\install.ps1
 ```
+
+脚本检测到当前终端不是管理员时会自动弹出 UAC 提权窗口，并把原登录用户保留为盘符挂载用户。
 
 如果仅在本机使用 HTTP 且暂时没有受信任证书，可显式启用 Windows WebClient 的 HTTP Basic（这是系统级弱化设置，不建议用于会访问不受信任 WebDAV 站点的电脑）：
 
@@ -53,6 +55,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 安装器会：
 
 - 使用 `uv.lock` 创建并同步隔离的 `windows-mount` 环境；
+- 将 `pythonservice.exe` 和所需 Python/pywin32 DLL 布置在隔离环境 `Scripts` 目录；
 - 注册并启动 `AnyShareUnofficialWebDAVX18765` 服务；
 - 启动 Windows `WebClient` 服务；
 - 注册当前用户登录时执行的盘符挂载任务；
