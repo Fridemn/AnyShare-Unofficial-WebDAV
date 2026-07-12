@@ -41,6 +41,34 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 $UvCommand = Get-Command $Uv -ErrorAction Stop
 $Uv = $UvCommand.Source
+$ServiceName = "AnyShareUnofficialWebDAVX18765"
+$TaskName = "AnyShareUnofficialWebDAVX18765Mount"
+
+# Both the service host and a running mount task load Python DLLs from the
+# isolated environment. Stop them before uv or the runtime repair replaces
+# those files during an upgrade/reinstall.
+$ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($ExistingTask -and $ExistingTask.State -eq "Running") {
+    Write-Host "Stopping existing mount task $TaskName..."
+    Stop-ScheduledTask -TaskName $TaskName
+    $TaskStopDeadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 200
+        $ExistingTask = Get-ScheduledTask -TaskName $TaskName
+    } while ($ExistingTask.State -eq "Running" -and (Get-Date) -lt $TaskStopDeadline)
+    if ($ExistingTask.State -eq "Running") {
+        throw "Existing mount task did not stop within 15 seconds: $TaskName"
+    }
+}
+$ExistingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($ExistingService -and $ExistingService.Status -ne "Stopped") {
+    Write-Host "Stopping existing service $ServiceName to unlock its runtime..."
+    Stop-Service -Name $ServiceName -Force
+    $ExistingService.WaitForStatus(
+        [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+        [TimeSpan]::FromSeconds(30)
+    )
+}
 
 Write-Host "Synchronizing isolated environment with uv..."
 $PreviousProjectEnvironment = $env:UV_PROJECT_ENVIRONMENT
@@ -82,16 +110,15 @@ if ($AllowHttpBasic) {
     Start-Service -Name "WebClient"
 }
 
-$GatewayService = Get-Service -Name "AnyShareUnofficialWebDAVX18765"
+$GatewayService = Get-Service -Name $ServiceName
 if ($GatewayService.Status -eq "Running") {
-    Restart-Service -Name "AnyShareUnofficialWebDAVX18765"
+    Restart-Service -Name $ServiceName
 } else {
-    Start-Service -Name "AnyShareUnofficialWebDAVX18765"
+    Start-Service -Name $ServiceName
 }
 
 $MountScript = Join-Path $PSScriptRoot "mount_drive.py"
 $MountLog = Join-Path $PSScriptRoot "mount_drive.log"
-$TaskName = "AnyShareUnofficialWebDAVX18765Mount"
 $ActionArgs = "`"$MountScript`" --env-file `"$EnvFile`" --force --log-file `"$MountLog`""
 $Action = New-ScheduledTaskAction -Execute $Python -Argument $ActionArgs -WorkingDirectory $Root
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $MountUser

@@ -54,6 +54,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 安装器会：
 
+- 重装或升级前停止已有服务及仍在运行的挂载任务，避免隔离环境的 DLL 被锁定；
 - 使用 `uv.lock` 创建并同步隔离的 `windows-mount` 环境；
 - 将 `pythonservice.exe` 和所需 Python/pywin32 DLL 布置在隔离环境 `Scripts` 目录；
 - 注册并启动 `AnyShareUnofficialWebDAVX18765` 服务；

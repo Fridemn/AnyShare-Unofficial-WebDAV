@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from Mount.config import MountConfig
 from Mount.mount_drive import mount_targets, probe_webdav
-from Mount.prepare_service_runtime import _first_existing
+from Mount.prepare_service_runtime import _copy, _first_existing
 
 
 BASE_ENV = """\
@@ -96,6 +96,20 @@ class TestMountConfig(unittest.TestCase):
             moved = Path(temp_dir) / "pythonservice.exe"
             moved.write_bytes(b"host")
             self.assertEqual(_first_existing(missing, moved), moved)
+
+    @patch("Mount.prepare_service_runtime.shutil.copy2")
+    def test_service_runtime_repair_skips_identical_file(self, copy2: Mock) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            destination_dir = Path(temp_dir) / "destination"
+            source_dir.mkdir()
+            destination_dir.mkdir()
+            (source_dir / "python3.dll").write_bytes(b"same runtime")
+            (destination_dir / "python3.dll").write_bytes(b"same runtime")
+
+            _copy(source_dir / "python3.dll", destination_dir)
+
+        copy2.assert_not_called()
 
 
 if __name__ == "__main__":

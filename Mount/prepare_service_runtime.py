@@ -6,6 +6,7 @@ import os
 import shutil
 import site
 import sys
+from filecmp import cmp
 from pathlib import Path
 
 
@@ -13,7 +14,9 @@ def _copy(source: Path, destination_dir: Path) -> None:
     if not source.is_file():
         raise FileNotFoundError(f"Required Windows service runtime file is missing: {source}")
     destination = destination_dir / source.name
-    if source.resolve() != destination.resolve():
+    if source.resolve() != destination.resolve() and not (
+        destination.is_file() and cmp(source, destination, shallow=False)
+    ):
         shutil.copy2(source, destination)
 
 
