@@ -165,29 +165,6 @@ Windows WebClient 通常要求 Basic 认证使用受信任的 HTTPS 连接，因
 
 当前限制：`COPY` 尚未实现；文件重命名采用下载、按新名称上传、删除旧文件的兼容流程；跨目录并同时重命名文件夹尚不支持。锁和自定义属性由网关进程内存保存，服务重启后失效。
 
-### 内容浏览与下载测试
-
-使用 `.env` 中的认证信息列出第一个文档库并下载其中找到的第一个文件：
-
-```bash
-uv run python scripts/test_download.py
-```
-
-也可以指定文档库和远端相对路径：
-
-```bash
-uv run python scripts/test_download.py \
-  --doc-lib '我的文档' \
-  --remote-path '资料/测试.pdf' \
-  --output-dir downloads
-```
-
-只检查登录并列出根目录，不下载文件：
-
-```bash
-uv run python scripts/test_download.py --doc-lib 0 --list-only
-```
-
 ## API 概览 <sub>API Overview</sub>
 
 ### 1. 基类（BaseClient）

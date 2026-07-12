@@ -1,92 +1,88 @@
-# Windows 系统服务与盘符挂载
+# Windows 盘符挂载教程
 
-该目录提供两个协作组件：
+先按项目根目录 [README](../README.md) 和 [`.env.example`](../.env.example) 完成 `.env` 配置，并确保已经安装 `uv`。
 
-1. `service.py` 作为 LocalSystem Windows 服务，读取项目根目录 `.env`，直接构造 `AuthenticatedClient`、`AnyShareRepository` 和 WsgiDAV 服务。
-2. `mount_drive.py` 在用户登录会话中通过 Windows WebClient Redirector 映射盘符。
-
-Windows 的盘符映射属于登录会话。系统服务创建的盘符不会出现在普通用户的资源管理器中，因此安装器使用“系统服务 + 用户登录计划任务”，而不是在服务中运行 `net use`。
-
-安装器使用 `uv` 在项目根目录创建专用 `.venv-windows-mount`，并通过 `uv sync --locked --extra windows-mount` 安装锁定依赖。服务和计划任务只使用该环境的 Python，不读取或修改 Windows 全局 Python 包。
-
-## 配置
-
-先填写项目根目录 `.env`。除网关已有字段外，支持：
-
-```dotenv
-ANYSHARE_MOUNT_DRIVE=X:
-ANYSHARE_MOUNT_URL=
-ANYSHARE_MOUNT_TLS_VERIFY=true
-ANYSHARE_MOUNT_WAIT_SECONDS=60
-```
-
-- `ANYSHARE_MOUNT_URL` 留空时，从 `ANYSHARE_DAV_HOST/PORT` 和证书配置推导。
-- `ANYSHARE_AUTH_COOKIE` 应保留浏览器请求中的完整 Cookie（包括刷新令牌）；访问令牌收到一次 `401/403` 时，客户端会自动刷新并重试。若刷新令牌也过期，需要重新从已登录的浏览器更新该值。
-- Windows WebClient 使用 Basic 认证时，正式使用建议配置受 Windows 信任的 HTTPS 证书。
-- `.env` 包含云端 Cookie 和本地挂载密码，安装器会限制其 ACL。
+以下命令均在仓库根目录执行。
 
 ## 安装
 
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后执行：
+默认配置使用本机 HTTP WebDAV，需要允许 Windows WebClient 通过 HTTP 使用 Basic 认证：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\Mount\install.ps1 -AllowHttpBasic
+```
+
+如果已为本地 WebDAV 配置受 Windows 信任的 HTTPS 证书，则不需要 `-AllowHttpBasic`：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\Mount\install.ps1
 ```
 
-脚本检测到当前终端不是管理员时会自动弹出 UAC 提权窗口，并把原登录用户保留为盘符挂载用户。
+脚本会自动请求管理员权限、创建 `.venv-windows-mount`、安装系统服务，并为当前登录用户注册盘符挂载任务。
 
-如果仅在本机使用 HTTP 且暂时没有受信任证书，可显式启用 Windows WebClient 的 HTTP Basic（这是系统级弱化设置，不建议用于会访问不受信任 WebDAV 站点的电脑）：
+## 验证
+
+安装完成后，新开一个普通、非管理员 PowerShell：
+
+```powershell
+Get-Service AnyShareUnofficialWebDAVX18765
+Get-ScheduledTask AnyShareUnofficialWebDAVX18765Mount
+Test-NetConnection 127.0.0.1 -Port 18765
+Get-Content .\Mount\mount_drive.log -Tail 20
+Get-PSDrive X
+Get-ChildItem X:\
+```
+
+成功日志类似：
+
+```text
+MOUNTED X: -> \\127.0.0.1@18765\DavWWWRoot
+```
+
+盘符映射属于用户登录会话。管理员 PowerShell 中看不到 `X:`，不代表普通桌面和资源管理器中的挂载失败。
+
+## 更新配置或重新安装
+
+修改 `.env`、更新 Cookie 或拉取新代码后，直接重新执行安装脚本，无需删除虚拟环境：
 
 ```powershell
 .\Mount\install.ps1 -AllowHttpBasic
 ```
 
-指定 uv、隔离环境使用的 Python 版本、配置文件或实际挂载用户：
+## 手动重挂载
+
+在普通、非管理员 PowerShell 中执行：
 
 ```powershell
-.\Mount\install.ps1 `
-  -Uv 'C:\Tools\uv.exe' `
-  -PythonVersion '3.11' `
-  -VenvDir 'C:\ProgramData\AnyShareWebDAV\venv' `
-  -EnvFile 'C:\ProgramData\AnyShareWebDAV\.env' `
-  -MountUser 'DOMAIN\alice'
+& .\.venv-windows-mount\Scripts\python.exe `
+  .\Mount\mount_drive.py `
+  --force `
+  --log-file .\Mount\mount_drive.log
 ```
 
-安装器会：
-
-- 重装或升级前停止已有服务及仍在运行的挂载任务，避免隔离环境的 DLL 被锁定；
-- 使用 `uv.lock` 创建并同步隔离的 `windows-mount` 环境；
-- 将 `pythonservice.exe` 和所需 Python/pywin32 DLL 布置在隔离环境 `Scripts` 目录；
-- 注册并启动 `AnyShareUnofficialWebDAVX18765` 服务；
-- 启动 Windows `WebClient` 服务；
-- 注册当前用户登录时执行的盘符挂载任务；
-- 使用带认证的 `PROPFIND` 检查 WebDAV 内容，并实际读取盘符后才报告成功；
-- 将每次登录挂载的结果追加到 `Mount\mount_drive.log`；
-- 限制 `.env` 为 SYSTEM、管理员和挂载用户可读。
-
-## 手动操作
+查看结果：
 
 ```powershell
-# 在当前用户会话挂载
-.\.venv-windows-mount\Scripts\python.exe .\Mount\mount_drive.py --force --log-file .\Mount\mount_drive.log
-
-# 卸载
-.\.venv-windows-mount\Scripts\python.exe .\Mount\mount_drive.py --unmount --force
-
-# 服务调试（前台运行）
-.\.venv-windows-mount\Scripts\python.exe .\Mount\service.py debug
-
-# 查看最后的挂载结果
 Get-Content .\Mount\mount_drive.log -Tail 20
 ```
+
+常见错误：
+
+- `Local WebDAV authentication failed`：检查 `.env` 中的 WebDAV 用户名和密码。
+- `AnyShare root listing ... HTTP 401/403`：重新登录 AnyShare，并更新 `.env` 中的完整 Cookie。
+- `python3.dll PermissionError`：先执行 `Stop-Service AnyShareUnofficialWebDAVX18765 -Force`，再重新安装。
 
 ## 卸载
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass
 .\Mount\uninstall.ps1
 ```
 
-默认卸载会同时删除 `.venv-windows-mount`。需要保留依赖环境时使用 `-KeepVenv`。
+保留 `.venv-windows-mount`：
 
-Windows Server 可能需要先安装 WebDAV Redirector/Desktop Experience。若使用 HTTPS，证书的主机名必须与挂载 URL 匹配并受 Windows 信任。
+```powershell
+.\Mount\uninstall.ps1 -KeepVenv
+```
