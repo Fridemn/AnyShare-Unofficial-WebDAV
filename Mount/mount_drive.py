@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -17,27 +18,53 @@ if str(PROJECT_ROOT) not in sys.path:
 from Mount.config import MountConfig, default_env_path  # noqa: E402
 
 
+PROPFIND_BODY = b'''<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>'''
+
+
+def probe_webdav(config: MountConfig) -> None:
+    """Verify DAV authentication and force a real AnyShare root listing."""
+    response = httpx.request(
+        "PROPFIND",
+        config.local_url,
+        auth=(config.dav_username, config.dav_password),
+        headers={"Depth": "1", "Content-Type": "application/xml"},
+        content=PROPFIND_BODY,
+        verify=config.mount_tls_verify,
+        timeout=15,
+    )
+    if response.status_code != 207:
+        raise RuntimeError(f"Authenticated WebDAV PROPFIND failed with HTTP {response.status_code}")
+
+
 def wait_until_ready(config: MountConfig) -> None:
     deadline = time.monotonic() + config.mount_wait_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            response = httpx.request(
-                "OPTIONS",
-                config.local_url,
-                auth=(config.dav_username, config.dav_password),
-                verify=config.mount_tls_verify,
-                timeout=3,
-            )
-            if response.status_code < 500:
-                return
-        except httpx.HTTPError as exc:
+            probe_webdav(config)
+            return
+        except (httpx.HTTPError, RuntimeError) as exc:
             last_error = exc
         time.sleep(1)
     raise TimeoutError(f"WebDAV gateway did not become ready: {last_error or config.local_url}")
 
 
-def mount_drive(config: MountConfig, *, force: bool = False) -> None:
+def mount_targets(config: MountConfig) -> tuple[str, ...]:
+    targets = [config.webdav_remote_name, config.local_url]
+    return tuple(dict.fromkeys(targets))
+
+
+def _same_remote(left: str, right: str) -> bool:
+    return left.rstrip("\\/").casefold() == right.rstrip("\\/").casefold()
+
+
+def _verify_drive_access(drive: str) -> None:
+    with os.scandir(f"{drive}\\") as entries:
+        next(entries, None)
+
+
+def mount_drive(config: MountConfig, *, force: bool = False) -> str:
     if os.name != "nt":
         raise RuntimeError("Drive mapping is only available on Windows")
     import win32netcon
@@ -49,22 +76,42 @@ def mount_drive(config: MountConfig, *, force: bool = False) -> None:
     except pywintypes.error:
         current = None
     if current:
-        if current.rstrip("\\/").casefold() == config.webdav_remote_name.rstrip("\\/").casefold():
-            return
-        if not force:
-            raise RuntimeError(f"{config.drive} is already mapped to another resource")
+        expected = any(_same_remote(current, target) for target in mount_targets(config))
+        if expected:
+            try:
+                _verify_drive_access(config.drive)
+                return current
+            except OSError as exc:
+                if not force:
+                    raise RuntimeError(
+                        f"{config.drive} is mapped but cannot be read; retry with --force: {exc}"
+                    ) from exc
+        elif not force:
+            raise RuntimeError(f"{config.drive} is already mapped to another resource: {current}")
         win32wnet.WNetCancelConnection2(config.drive, win32netcon.CONNECT_UPDATE_PROFILE, True)
 
-    resource = win32wnet.NETRESOURCE()
-    resource.dwType = win32netcon.RESOURCETYPE_DISK
-    resource.lpLocalName = config.drive
-    resource.lpRemoteName = config.webdav_remote_name
-    win32wnet.WNetAddConnection2(
-        resource,
-        config.dav_password,
-        config.dav_username,
-        win32netcon.CONNECT_UPDATE_PROFILE,
-    )
+    errors: list[str] = []
+    for target in mount_targets(config):
+        resource = win32wnet.NETRESOURCE()
+        resource.dwType = win32netcon.RESOURCETYPE_DISK
+        resource.lpLocalName = config.drive
+        resource.lpRemoteName = target
+        try:
+            win32wnet.WNetAddConnection2(
+                resource,
+                config.dav_password,
+                config.dav_username,
+                win32netcon.CONNECT_UPDATE_PROFILE,
+            )
+            _verify_drive_access(config.drive)
+            return target
+        except (OSError, pywintypes.error) as exc:
+            errors.append(f"{target}: {exc}")
+            try:
+                win32wnet.WNetCancelConnection2(config.drive, win32netcon.CONNECT_UPDATE_PROFILE, True)
+            except pywintypes.error:
+                pass
+    raise RuntimeError("Windows created no readable WebDAV mapping; " + " | ".join(errors))
 
 
 def unmount_drive(config: MountConfig, *, force: bool = False) -> None:
@@ -86,7 +133,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unmount", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--no-wait", action="store_true")
+    parser.add_argument("--log-file", help="append mount status to this file")
     return parser
+
+
+def _log(path: str | None, message: str) -> None:
+    if not path:
+        return
+    log_path = Path(path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    with log_path.open("a", encoding="utf-8") as target:
+        target.write(f"{timestamp} {message}\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,13 +153,19 @@ def main(argv: list[str] | None = None) -> int:
         config = MountConfig.from_env_file(args.env_file)
         if args.unmount:
             unmount_drive(config, force=args.force)
+            message = f"UNMOUNTED {config.drive}"
         else:
             if not args.no_wait:
                 wait_until_ready(config)
-            mount_drive(config, force=args.force)
+            target = mount_drive(config, force=args.force)
+            message = f"MOUNTED {config.drive} -> {target}"
+        print(message)
+        _log(args.log_file, message)
         return 0
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        message = f"ERROR: {exc}"
+        print(message, file=sys.stderr)
+        _log(args.log_file, message)
         return 1
 
 

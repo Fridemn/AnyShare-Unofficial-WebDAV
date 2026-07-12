@@ -6,3 +6,4 @@ temp
 !.env.example
 test.md
 /tests/.env
+Mount/*.log

@@ -6,9 +6,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from Mount.config import MountConfig
+from Mount.mount_drive import mount_targets, probe_webdav
 from Mount.prepare_service_runtime import _first_existing
 
 
@@ -46,6 +47,32 @@ class TestMountConfig(unittest.TestCase):
             config.webdav_remote_name,
             r"\\dav.example.com@SSL@8443\DavWWWRoot\root\path",
         )
+
+    def test_mount_targets_try_unc_then_url(self) -> None:
+        config = self._load()
+        self.assertEqual(
+            mount_targets(config),
+            (r"\\127.0.0.1@18765\DavWWWRoot", "http://127.0.0.1:18765/"),
+        )
+
+    @patch("Mount.mount_drive.httpx.request")
+    def test_probe_uses_authenticated_propfind(self, request: Mock) -> None:
+        request.return_value.status_code = 207
+        config = self._load()
+
+        probe_webdav(config)
+
+        request.assert_called_once()
+        args, kwargs = request.call_args
+        self.assertEqual(args, ("PROPFIND", "http://127.0.0.1:18765/"))
+        self.assertEqual(kwargs["auth"], ("anyshare-x", "dav-password"))
+        self.assertEqual(kwargs["headers"]["Depth"], "1")
+
+    @patch("Mount.mount_drive.httpx.request")
+    def test_probe_rejects_authentication_failure(self, request: Mock) -> None:
+        request.return_value.status_code = 401
+        with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+            probe_webdav(self._load())
 
     def test_process_environment_overrides_dotenv(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

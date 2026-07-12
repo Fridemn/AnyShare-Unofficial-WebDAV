@@ -90,14 +90,28 @@ if ($GatewayService.Status -eq "Running") {
 }
 
 $MountScript = Join-Path $PSScriptRoot "mount_drive.py"
+$MountLog = Join-Path $PSScriptRoot "mount_drive.log"
 $TaskName = "AnyShareUnofficialWebDAVX18765Mount"
-$ActionArgs = "`"$MountScript`" --env-file `"$EnvFile`" --force"
+$ActionArgs = "`"$MountScript`" --env-file `"$EnvFile`" --force --log-file `"$MountLog`""
 $Action = New-ScheduledTaskAction -Execute $Python -Argument $ActionArgs -WorkingDirectory $Root
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $MountUser
 $TaskPrincipal = New-ScheduledTaskPrincipal -UserId $MountUser -LogonType Interactive -RunLevel Limited
 $Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $TaskPrincipal -Settings $Settings -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
+$MountDeadline = (Get-Date).AddSeconds(75)
+do {
+    Start-Sleep -Milliseconds 500
+    $TaskState = (Get-ScheduledTask -TaskName $TaskName).State
+} while ($TaskState -eq "Running" -and (Get-Date) -lt $MountDeadline)
+$TaskResult = (Get-ScheduledTaskInfo -TaskName $TaskName).LastTaskResult
+if ($TaskState -eq "Running") {
+    Write-Warning "Drive mount validation did not finish within 75 seconds. See $MountLog"
+} elseif ($TaskResult -ne 0) {
+    Write-Warning "Drive mount failed with task result $TaskResult. See $MountLog"
+} else {
+    Write-Host "Drive X: was verified in the non-elevated user session."
+}
 
 Write-Host "Installed AnyShare WebDAV service and login mount task."
 Write-Host "Environment: $EnvFile"

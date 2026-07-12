@@ -59,19 +59,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 - 注册并启动 `AnyShareUnofficialWebDAVX18765` 服务；
 - 启动 Windows `WebClient` 服务；
 - 注册当前用户登录时执行的盘符挂载任务；
+- 使用带认证的 `PROPFIND` 检查 WebDAV 内容，并实际读取盘符后才报告成功；
+- 将每次登录挂载的结果追加到 `Mount\mount_drive.log`；
 - 限制 `.env` 为 SYSTEM、管理员和挂载用户可读。
 
 ## 手动操作
 
 ```powershell
 # 在当前用户会话挂载
-.\.venv-windows-mount\Scripts\python.exe .\Mount\mount_drive.py --force
+.\.venv-windows-mount\Scripts\python.exe .\Mount\mount_drive.py --force --log-file .\Mount\mount_drive.log
 
 # 卸载
 .\.venv-windows-mount\Scripts\python.exe .\Mount\mount_drive.py --unmount --force
 
 # 服务调试（前台运行）
 .\.venv-windows-mount\Scripts\python.exe .\Mount\service.py debug
+
+# 查看最后的挂载结果
+Get-Content .\Mount\mount_drive.log -Tail 20
 ```
 
 ## 卸载
