@@ -13,6 +13,22 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+webdav = ["wsgidav>=4.3.5,<5", "cheroot>=11,<12", "python-dotenv>=1,<2"]
+windows-mount = [
+    "wsgidav>=4.3.5,<5",
+    "cheroot>=11,<12",
+    "python-dotenv>=1,<2",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.scripts]
+anyshare-webdav = "anyshare_unofficial.webdav.cli:main"
+
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.9.11,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "anyshare_unofficial"
+module-root = ""

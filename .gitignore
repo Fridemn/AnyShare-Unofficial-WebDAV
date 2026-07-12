@@ -1,4 +1,8 @@
 __pycache__
 dist
 temp
+.venv-windows-mount/
+.env
+!.env.example
+test.md
 /tests/.env

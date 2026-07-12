@@ -24,7 +24,7 @@ class LocalFile:
     crc32: str  # 8 lowercase hex characters
 
     @classmethod
-    def from_path(cls, path: str | Path) -> "LocalFile":
+    def from_path(cls, path: str | Path, *, name: str | None = None) -> "LocalFile":
         """Create a LocalFile instance from a file path.
 
         Raises FileNotFoundError if the path does not point to an existing file.
@@ -33,15 +33,22 @@ class LocalFile:
         if not path.is_file():
             raise FileNotFoundError(path.absolute())
 
-        file_data = path.read_bytes()
+        md5 = hashlib.md5()
+        crc32 = 0
+        size = 0
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                size += len(chunk)
+                md5.update(chunk)
+                crc32 = zlib.crc32(chunk, crc32)
+
         instance = cls(
             handle=path.open("rb"),
-            name=path.name,
-            size=len(file_data),
-            md5=hashlib.md5(file_data).hexdigest().lower(),
-            crc32=f"{zlib.crc32(file_data):08x}",
+            name=name or path.name,
+            size=size,
+            md5=md5.hexdigest().lower(),
+            crc32=f"{crc32 & 0xFFFFFFFF:08x}",
         )
-        del file_data
         return instance
 
     def close(self) -> None:

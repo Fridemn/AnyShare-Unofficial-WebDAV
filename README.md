@@ -32,12 +32,12 @@ AiShu AnyShare Cloud Drive Unofficial API Client Library
 
 需要安装 `httpx>=0.28.1`和 `pydantic>=2.13.4` 库。
 
-随后通过下面的命令安装本库：
+推荐使用 `uv` 安装本库或同步当前项目，依赖会进入项目虚拟环境，不修改全局 Python：
 
 ```bash
-pip install anyshare-unofficial
-# 或
-poetry add anyshare-unofficial
+uv add anyshare-unofficial
+# 当前源码仓库
+uv sync
 ```
 
 ### 示例：匿名访问云盘
@@ -127,6 +127,65 @@ shares = client.list_shares_with_anyone()
 
 # 关闭连接
 client.close()
+```
+
+## WebDAV 网关（实验性）
+
+同步 WebDAV 可选依赖：
+
+```bash
+uv sync --extra webdav
+```
+
+复制示例配置并填写 AnyShare 会话和独立的 WebDAV 登录凭据：
+
+```bash
+cp .env.example .env
+# 编辑 .env 后启动；默认自动读取当前目录的 .env
+uv run anyshare-webdav
+```
+
+也可以通过 `uv run anyshare-webdav --env-file /path/to/config.env` 指定其他配置文件。配置优先级为：命令行参数 > 系统环境变量 > `.env`。`.env` 已加入 Git 忽略列表，不要提交真实 Cookie 和密码。
+
+服务根目录会把当前账号可访问的文档库显示为一级目录。支持目录浏览、Range 下载、上传、建目录、删除、移动、重命名以及 WebDAV 锁。默认只监听本机；如果需要从其他设备访问，请在前方配置可信 HTTPS 反向代理，或通过 `--certfile` 和 `--keyfile` 启用 HTTPS。不要通过明文 HTTP 暴露 Basic 认证或 AnyShare Cookie。
+
+Windows 可使用以下方式映射盘符：
+
+```powershell
+net use X: https://dav.example.com/ /user:anyshare-x *
+```
+
+Windows WebClient 通常要求 Basic 认证使用受信任的 HTTPS 连接，因此证书需要被 Windows 信任。本机明文 HTTP 仅适合已明确允许该认证方式的测试客户端。
+
+需要注册为 Windows 系统服务并在用户登录后自动映射盘符时，使用 [`Mount/`](Mount/README.md) 中的安装器：
+
+```powershell
+.\Mount\install.ps1
+```
+
+当前限制：`COPY` 尚未实现；文件重命名采用下载、按新名称上传、删除旧文件的兼容流程；跨目录并同时重命名文件夹尚不支持。锁和自定义属性由网关进程内存保存，服务重启后失效。
+
+### 内容浏览与下载测试
+
+使用 `.env` 中的认证信息列出第一个文档库并下载其中找到的第一个文件：
+
+```bash
+uv run python scripts/test_download.py
+```
+
+也可以指定文档库和远端相对路径：
+
+```bash
+uv run python scripts/test_download.py \
+  --doc-lib '我的文档' \
+  --remote-path '资料/测试.pdf' \
+  --output-dir downloads
+```
+
+只检查登录并列出根目录，不下载文件：
+
+```bash
+uv run python scripts/test_download.py --doc-lib 0 --list-only
 ```
 
 ## API 概览 <sub>API Overview</sub>
