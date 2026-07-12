@@ -22,19 +22,44 @@ PROPFIND_BODY = b'''<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>'''
 
 
-def probe_webdav(config: MountConfig) -> None:
-    """Verify DAV authentication and force a real AnyShare root listing."""
-    response = httpx.request(
+def _propfind(config: MountConfig, depth: str) -> httpx.Response:
+    return httpx.request(
         "PROPFIND",
         config.local_url,
         auth=(config.dav_username, config.dav_password),
-        headers={"Depth": "1", "Content-Type": "application/xml"},
+        headers={"Depth": depth, "Content-Type": "application/xml"},
         content=PROPFIND_BODY,
         verify=config.mount_tls_verify,
         timeout=15,
     )
+
+
+def _response_detail(response: httpx.Response) -> str:
+    detail = " ".join(response.text.split())[:300]
+    return f": {detail}" if detail else ""
+
+
+def probe_webdav(config: MountConfig) -> None:
+    """Verify local DAV authentication, then force an AnyShare root listing."""
+    local_response = _propfind(config, "0")
+    if local_response.status_code != 207:
+        message = (
+            "Local WebDAV authentication failed "
+            f"with HTTP {local_response.status_code}{_response_detail(local_response)}"
+        )
+        if local_response.status_code in {401, 403}:
+            raise PermissionError(message)
+        raise RuntimeError(message)
+
+    response = _propfind(config, "1")
     if response.status_code != 207:
-        raise RuntimeError(f"Authenticated WebDAV PROPFIND failed with HTTP {response.status_code}")
+        message = (
+            "AnyShare root listing through WebDAV failed "
+            f"with HTTP {response.status_code}{_response_detail(response)}"
+        )
+        if response.status_code in {401, 403}:
+            raise PermissionError(message)
+        raise RuntimeError(message)
 
 
 def wait_until_ready(config: MountConfig) -> None:

@@ -21,6 +21,7 @@ ANYSHARE_MOUNT_WAIT_SECONDS=60
 ```
 
 - `ANYSHARE_MOUNT_URL` 留空时，从 `ANYSHARE_DAV_HOST/PORT` 和证书配置推导。
+- `ANYSHARE_AUTH_COOKIE` 应保留浏览器请求中的完整 Cookie（包括刷新令牌）；访问令牌收到一次 `401/403` 时，客户端会自动刷新并重试。若刷新令牌也过期，需要重新从已登录的浏览器更新该值。
 - Windows WebClient 使用 Basic 认证时，正式使用建议配置受 Windows 信任的 HTTPS 证书。
 - `.env` 包含云端 Cookie 和本地挂载密码，安装器会限制其 ACL。
 

@@ -57,21 +57,31 @@ class TestMountConfig(unittest.TestCase):
 
     @patch("Mount.mount_drive.httpx.request")
     def test_probe_uses_authenticated_propfind(self, request: Mock) -> None:
-        request.return_value.status_code = 207
+        request.return_value = Mock(status_code=207, text="")
         config = self._load()
 
         probe_webdav(config)
 
-        request.assert_called_once()
-        args, kwargs = request.call_args
+        self.assertEqual(request.call_count, 2)
+        args, kwargs = request.call_args_list[0]
         self.assertEqual(args, ("PROPFIND", "http://127.0.0.1:18765/"))
         self.assertEqual(kwargs["auth"], ("anyshare-x", "dav-password"))
-        self.assertEqual(kwargs["headers"]["Depth"], "1")
+        self.assertEqual(kwargs["headers"]["Depth"], "0")
+        self.assertEqual(request.call_args_list[1].kwargs["headers"]["Depth"], "1")
 
     @patch("Mount.mount_drive.httpx.request")
     def test_probe_rejects_authentication_failure(self, request: Mock) -> None:
-        request.return_value.status_code = 401
-        with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+        request.return_value = Mock(status_code=401, text="Unauthorized")
+        with self.assertRaisesRegex(PermissionError, "Local WebDAV authentication.*HTTP 401"):
+            probe_webdav(self._load())
+
+    @patch("Mount.mount_drive.httpx.request")
+    def test_probe_identifies_upstream_listing_failure(self, request: Mock) -> None:
+        request.side_effect = [
+            Mock(status_code=207, text=""),
+            Mock(status_code=403, text="Authentication failed"),
+        ]
+        with self.assertRaisesRegex(PermissionError, "AnyShare root listing.*HTTP 403"):
             probe_webdav(self._load())
 
     def test_process_environment_overrides_dotenv(self) -> None:

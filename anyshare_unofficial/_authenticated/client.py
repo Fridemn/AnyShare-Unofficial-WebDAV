@@ -7,13 +7,16 @@ departments, permissions, and more.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
+import httpx
+
 from anyshare_unofficial._base.client import BaseClient
-from anyshare_unofficial.exceptions import AnyShareInputError
+from anyshare_unofficial.exceptions import AnyShareAuthError, AnyShareInputError
 from anyshare_unofficial.models.auth import AuthConfig, LoginConfig, UserBasicInfo, UserInfo
 from anyshare_unofficial.models.common import DocLibInfo
 from anyshare_unofficial.models.contact import (
@@ -60,6 +63,8 @@ class AuthenticatedClient(BaseClient):
     ) -> None:
         super().__init__(base_url=base_url, timeout=timeout, verify=verify, headers=headers)
         self._logger = logging.getLogger("AuthenticatedClient")
+        self._refresh_lock = threading.RLock()
+        self._auth_generation = 0
         self.set_cookie(cookie_string)
 
     # ------------------------------------------------------------------
@@ -68,8 +73,10 @@ class AuthenticatedClient(BaseClient):
 
     def set_cookie(self, cookie_string: str) -> None:
         """Parse and apply a provided cookie string."""
-        self._set_cookies_from_string(cookie_string)
-        self._update_authorization_header()
+        with self._refresh_lock:
+            self._set_cookies_from_string(cookie_string)
+            self._update_authorization_header()
+            self._auth_generation += 1
 
     def _update_authorization_header(self) -> None:
         """Update the Authorization header from cookies."""
@@ -79,9 +86,50 @@ class AuthenticatedClient(BaseClient):
 
     def refresh_token(self, force: bool = False) -> None:
         """Refresh the OAuth2 token."""
-        self._get("/anyshare/oauth2/login/refreshToken", params={"force": "true" if force else "false"})
-        self._update_authorization_header()
-        self._logger.debug("Token refreshed (force=%s)", force)
+        with self._refresh_lock:
+            # Bypass the automatic retry wrapper: a rejected refresh request
+            # must be returned to the caller instead of recursing forever.
+            super()._get(
+                "/anyshare/oauth2/login/refreshToken",
+                params={"force": "true" if force else "false"},
+            )
+            self._update_authorization_header()
+            self._auth_generation += 1
+            self._logger.debug("Token refreshed (force=%s)", force)
+
+    def _refresh_after_auth_failure(self, observed_generation: int) -> None:
+        with self._refresh_lock:
+            if self._auth_generation == observed_generation:
+                self.refresh_token(force=True)
+
+    def _get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        generation = self._auth_generation
+        try:
+            return super()._get(path, params=params)
+        except AnyShareAuthError:
+            self._refresh_after_auth_failure(generation)
+            return super()._get(path, params=params)
+
+    def _post(
+        self,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        generation = self._auth_generation
+        try:
+            return super()._post(path, json=json, data=data, files=files, params=params)
+        except AnyShareAuthError:
+            self._refresh_after_auth_failure(generation)
+            return super()._post(path, json=json, data=data, files=files, params=params)
 
     # ------------------------------------------------------------------
     # User & Config
