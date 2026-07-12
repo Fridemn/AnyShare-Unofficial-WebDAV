@@ -1,4 +1,6 @@
 __pycache__
 dist
 temp
+.venv-windows-mount/
 /tests/.env
+scripts/*.log

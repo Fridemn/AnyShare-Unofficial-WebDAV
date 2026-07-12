@@ -129,6 +129,46 @@ shares = client.list_shares_with_anyone()
 client.close()
 ```
 
+## WebDAV 网关（实验性）
+
+安装 WebDAV 可选依赖：
+
+```bash
+pip install "AnyShare-Unofficial[webdav]"
+# 在源码仓库中开发
+poetry install -E webdav
+```
+
+通过命令行参数和系统环境变量提供配置：
+
+```bash
+export ANYSHARE_AUTH_COOKIE='Authorization=Bearer ...; JSESSIONID=...'
+anyshare-webdav \
+  --base-url https://anyshare.example.com \
+  --username anyshare-dav \
+  --password 'change-this-password'
+```
+
+在 Poetry 环境中使用 `poetry run anyshare-webdav`。除 `ANYSHARE_AUTH_COOKIE` 外，CLI 参数均可用同名 `ANYSHARE_DAV_*` 环境变量配置；命令行参数优先。不要把真实 Cookie 或密码提交到仓库。
+
+服务根目录会把当前账号可访问的文档库显示为一级目录。支持目录浏览、Range 下载、上传、建目录、删除、移动、重命名以及 WebDAV 锁。默认只监听本机；如果需要从其他设备访问，请在前方配置可信 HTTPS 反向代理，或通过 `--certfile` 和 `--keyfile` 启用 HTTPS。不要通过明文 HTTP 暴露 Basic 认证或 AnyShare Cookie。
+
+Windows 可使用以下方式映射盘符：
+
+```powershell
+net use X: https://dav.example.com/ /user:anyshare-x *
+```
+
+Windows WebClient 通常要求 Basic 认证使用受信任的 HTTPS 连接，因此证书需要被 Windows 信任。本机明文 HTTP 仅适合已明确允许该认证方式的测试客户端。
+
+需要注册为 Windows 系统服务并在用户登录后自动映射盘符时，使用 [`scripts/`](scripts/README.md) 中的安装器：
+
+```powershell
+.\scripts\install.ps1
+```
+
+当前限制：`COPY` 尚未实现；文件重命名采用下载、按新名称上传、删除旧文件的兼容流程；跨目录并同时重命名文件夹尚不支持。锁和自定义属性由网关进程内存保存，服务重启后失效。
+
 ## API 概览 <sub>API Overview</sub>
 
 ### 1. 基类（BaseClient）

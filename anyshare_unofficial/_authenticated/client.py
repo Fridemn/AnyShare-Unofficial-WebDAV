@@ -7,12 +7,16 @@ departments, permissions, and more.
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
+import httpx
+
 from anyshare_unofficial._base.client import BaseClient
-from anyshare_unofficial.exceptions import AnyShareInputError
+from anyshare_unofficial.exceptions import AnyShareAuthError, AnyShareInputError
 from anyshare_unofficial.models.auth import AuthConfig, LoginConfig, UserBasicInfo, UserInfo
 from anyshare_unofficial.models.common import DocLibInfo
 from anyshare_unofficial.models.contact import (
@@ -25,7 +29,7 @@ from anyshare_unofficial.models.contact import (
     DepartmentUserListResponse,
 )
 from anyshare_unofficial.models.messages import NotificationListResult
-from anyshare_unofficial.models.fileobj import FileItem, FileMetadata, FolderContent, ItemDetail
+from anyshare_unofficial.models.fileobj import FileItem, FileMetadata, FolderContent, FolderItem, ItemDetail
 from anyshare_unofficial.models.operations import (
     DirCreateResult,
     DownloadAuth,
@@ -52,9 +56,15 @@ class AuthenticatedClient(BaseClient):
         self,
         cookie_string: str,
         base_url: str | None = None,
+        *,
+        timeout: float = 30.0,
+        verify: bool = True,
+        headers: dict[str, str] | None = None,
     ) -> None:
-        super().__init__(base_url=base_url)
+        super().__init__(base_url=base_url, timeout=timeout, verify=verify, headers=headers)
         self._logger = logging.getLogger("AuthenticatedClient")
+        self._refresh_lock = threading.RLock()
+        self._auth_generation = 0
         self.set_cookie(cookie_string)
 
     # ------------------------------------------------------------------
@@ -63,8 +73,10 @@ class AuthenticatedClient(BaseClient):
 
     def set_cookie(self, cookie_string: str) -> None:
         """Parse and apply a provided cookie string."""
-        self._set_cookies_from_string(cookie_string)
-        self._update_authorization_header()
+        with self._refresh_lock:
+            self._set_cookies_from_string(cookie_string)
+            self._update_authorization_header()
+            self._auth_generation += 1
 
     def _update_authorization_header(self) -> None:
         """Update the Authorization header from cookies."""
@@ -74,9 +86,50 @@ class AuthenticatedClient(BaseClient):
 
     def refresh_token(self, force: bool = False) -> None:
         """Refresh the OAuth2 token."""
-        self._get("/anyshare/oauth2/login/refreshToken", params={"force": "true" if force else "false"})
-        self._update_authorization_header()
-        self._logger.debug("Token refreshed (force=%s)", force)
+        with self._refresh_lock:
+            # Bypass the automatic retry wrapper: a rejected refresh request
+            # must be returned to the caller instead of recursing forever.
+            super()._get(
+                "/anyshare/oauth2/login/refreshToken",
+                params={"force": "true" if force else "false"},
+            )
+            self._update_authorization_header()
+            self._auth_generation += 1
+            self._logger.debug("Token refreshed (force=%s)", force)
+
+    def _refresh_after_auth_failure(self, observed_generation: int) -> None:
+        with self._refresh_lock:
+            if self._auth_generation == observed_generation:
+                self.refresh_token(force=True)
+
+    def _get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        generation = self._auth_generation
+        try:
+            return super()._get(path, params=params)
+        except AnyShareAuthError:
+            self._refresh_after_auth_failure(generation)
+            return super()._get(path, params=params)
+
+    def _post(
+        self,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        generation = self._auth_generation
+        try:
+            return super()._post(path, json=json, data=data, files=files, params=params)
+        except AnyShareAuthError:
+            self._refresh_after_auth_failure(generation)
+            return super()._post(path, json=json, data=data, files=files, params=params)
 
     # ------------------------------------------------------------------
     # User & Config
@@ -142,6 +195,7 @@ class AuthenticatedClient(BaseClient):
         sort: SortField = SortField.NAME,
         direction: SortDirection = SortDirection.ASC,
         mode: ObjectMode = ObjectMode.ALL,
+        marker: str = "",
     ) -> FolderContent:
         """Browse the contents of a folder by GNS path."""
         if not is_gns_path(gns_path):
@@ -154,9 +208,40 @@ class AuthenticatedClient(BaseClient):
                 "sort": sort.value,
                 "direction": direction.value,
                 "permission_attributes_required": "false",
+                **({"marker": marker} if marker else {}),
             },
         )
         return self._build_folder_content(r.json(), mode=mode)
+
+    def iter_folder(
+        self,
+        gns_path: str,
+        *,
+        page_size: int = 100,
+        sort: SortField = SortField.NAME,
+        direction: SortDirection = SortDirection.ASC,
+        mode: ObjectMode = ObjectMode.ALL,
+    ) -> Iterator[FileItem | FolderItem]:
+        """Iterate through every entry in a folder, following API markers."""
+        marker = ""
+        seen_markers: set[str] = set()
+        while True:
+            content = self.browse_folder(
+                gns_path,
+                limit=page_size,
+                sort=sort,
+                direction=direction,
+                mode=mode,
+                marker=marker,
+            )
+            yield from content.dirs
+            yield from content.files
+            marker = content.next_marker
+            if not marker:
+                return
+            if marker in seen_markers:
+                raise RuntimeError(f"AnyShare returned a repeated folder marker: {marker}")
+            seen_markers.add(marker)
 
     # ------------------------------------------------------------------
     # File Metadata
@@ -308,12 +393,13 @@ class AuthenticatedClient(BaseClient):
         remote_gns_dir: str,
         *,
         ondup: OnDup = OnDup.RENAME,
+        remote_name: str | None = None,
     ) -> OsEndUploadResult:
         """Upload a file via the S3 upload flow."""
         if not is_gns_path(remote_gns_dir):
             raise AnyShareInputError(f"Not a valid GNS path: {remote_gns_dir}")
 
-        local_file = LocalFile.from_path(local_path)
+        local_file = LocalFile.from_path(local_path, name=remote_name)
         try:
             upload_auth, begin_result = self._begin_upload(local_file, remote_gns_dir, ondup=ondup)
             self._do_upload(upload_auth, local_file)
@@ -451,13 +537,20 @@ class AuthenticatedClient(BaseClient):
         Directories are traversed recursively; files are collected.
         """
         all_files: list[FileItem] = []
-        content = self.browse_folder(gns_path, sort=sort, direction=direction)
+        entries = self.iter_folder(gns_path, sort=sort, direction=direction)
+        folders: list[FolderItem] = []
+        files: list[FileItem] = []
+        for entry in entries:
+            if entry.is_dir:
+                folders.append(entry)
+            else:
+                files.append(entry)
 
-        for folder in content.dirs:
+        for folder in folders:
             try:
                 all_files.extend(self.walk_folder(folder.id, sort=sort, direction=direction))
             except Exception as exc:
                 self._logger.warning("Failed to walk folder %s: %s", folder.id, exc)
 
-        all_files.extend(content.files)
+        all_files.extend(files)
         return all_files

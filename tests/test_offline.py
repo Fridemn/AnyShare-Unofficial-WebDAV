@@ -118,6 +118,69 @@ class TestCookieParsing(unittest.TestCase):
         self.assertDictEqual(result, {"flag": ""})
 
 
+class TestAuthenticatedTokenRefresh(unittest.TestCase):
+
+    def test_get_refreshes_once_after_auth_failure(self) -> None:
+        from unittest.mock import call, patch
+
+        import httpx
+
+        from anyshare_unofficial import AuthenticatedClient
+        from anyshare_unofficial._base.client import BaseClient
+        from anyshare_unofficial.exceptions import AnyShareAuthError
+
+        refreshed = httpx.Response(200)
+        retried = httpx.Response(200, json=[])
+        client = AuthenticatedClient(
+            "Authorization=Bearer old; client.oauth2_refresh_token=refresh",
+            base_url="https://anyshare.example.com",
+        )
+        self.addCleanup(client.close)
+
+        with patch.object(
+            BaseClient,
+            "_get",
+            side_effect=[AnyShareAuthError("expired", status_code=403), refreshed, retried],
+        ) as request:
+            result = client._get("/api/efast/v1/entry-doc-lib")
+
+        self.assertIs(result, retried)
+        self.assertEqual(
+            request.call_args_list,
+            [
+                call("/api/efast/v1/entry-doc-lib", params=None),
+                call("/anyshare/oauth2/login/refreshToken", params={"force": "true"}),
+                call("/api/efast/v1/entry-doc-lib", params=None),
+            ],
+        )
+
+    def test_refresh_failure_is_not_retried_recursively(self) -> None:
+        from unittest.mock import patch
+
+        from anyshare_unofficial import AuthenticatedClient
+        from anyshare_unofficial._base.client import BaseClient
+        from anyshare_unofficial.exceptions import AnyShareAuthError
+
+        client = AuthenticatedClient(
+            "Authorization=Bearer old; client.oauth2_refresh_token=expired",
+            base_url="https://anyshare.example.com",
+        )
+        self.addCleanup(client.close)
+
+        with patch.object(
+            BaseClient,
+            "_get",
+            side_effect=[
+                AnyShareAuthError("expired access token", status_code=403),
+                AnyShareAuthError("expired refresh token", status_code=401),
+            ],
+        ) as request:
+            with self.assertRaisesRegex(AnyShareAuthError, "expired refresh token"):
+                client._get("/api/efast/v1/entry-doc-lib")
+
+        self.assertEqual(request.call_count, 2)
+
+
 # ---------------------------------------------------------------------------
 # LocalFile
 # ---------------------------------------------------------------------------
